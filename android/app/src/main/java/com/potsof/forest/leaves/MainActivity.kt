@@ -1,4 +1,4 @@
-package com.potsofforestleaves
+package com.potsof.forest.leaves
 
 import com.facebook.react.ReactActivity
 import com.facebook.react.ReactActivityDelegate

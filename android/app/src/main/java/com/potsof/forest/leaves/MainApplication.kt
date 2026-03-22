@@ -1,4 +1,4 @@
-package com.potsofforestleaves
+package com.potsof.forest.leaves
 
 import android.app.Application
 import com.facebook.react.PackageList
