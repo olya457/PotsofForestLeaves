@@ -10,10 +10,10 @@ workflows:
         distribution_type: app_store
         bundle_identifier: com.desotresaves.cernicernicik
       vars:
-        APP_STORE_APPLE_ID: 6756238326
+        APP_STORE_APPLE_ID: 6760995605
         BUNDLE_ID: 'com.desotresaves.cernicernicik'
-        XCODE_WORKSPACE: 'LettoMaxChoiceType.xcworkspace'
-        XCODE_SCHEME: 'LettoMaxChoiceType'
+        XCODE_WORKSPACE: 'PotsofForestLeaves.xcworkspace'
+        XCODE_SCHEME: 'PotsofForestLeaves'
     scripts:
       - name: Install node modules
         script: |
@@ -50,4 +50,4 @@ workflows:
       app_store_connect:
         auth: integration
         submit_to_app_store: true
-        copyright: VESA ENSIO LAHDEMAKI
+        copyright: Nigul Sisaar
