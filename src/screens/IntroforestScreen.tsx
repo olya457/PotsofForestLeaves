@@ -4,13 +4,14 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
-  Dimensions,
   FlatList,
   Image,
   ImageBackground,
   Animated,
   Easing,
   useWindowDimensions,
+  Platform,
+  StatusBar,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -93,8 +94,6 @@ const onboardingData: OnboardingItem[] = [
   },
 ];
 
-const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
-
 export default function IntroScreen({ navigation }: Props) {
   const flatListRef = useRef<FlatList<OnboardingItem>>(null);
   const insets = useSafeAreaInsets();
@@ -106,38 +105,53 @@ export default function IntroScreen({ navigation }: Props) {
   const translateAnim = useRef(new Animated.Value(18)).current;
   const scaleAnim = useRef(new Animated.Value(0.98)).current;
 
-  const isSmall = height < 780;
   const isVerySmall = height < 700;
-  const isSE = height < 670;
+  const isSmall = height >= 700 && height < 780;
+  const isMedium = height >= 780 && height < 900;
+  const isTabletLike = width >= 700;
 
-  const horizontalPadding = isSE ? 16 : isVerySmall ? 18 : isSmall ? 22 : 28;
+  const topInset = Math.max(insets.top, Platform.OS === 'android' ? StatusBar.currentHeight ?? 0 : 0);
+  const bottomInset = Math.max(insets.bottom, 12);
 
-  const cardWidth = Math.min(width - horizontalPadding * 2, 360);
-  const cardHeight = Math.min(height * (isSE ? 0.8 : isVerySmall ? 0.82 : 0.86), 760);
+  const sidePadding = isTabletLike ? 40 : isVerySmall ? 16 : isSmall ? 18 : 22;
+  const cardMaxWidth = isTabletLike ? 430 : 380;
+  const cardWidth = Math.min(width - sidePadding * 2, cardMaxWidth);
 
-  const titleFontSize = isSE ? 20 : isVerySmall ? 22 : isSmall ? 24 : 26;
-  const titleLineHeight = isSE ? 24 : isVerySmall ? 27 : isSmall ? 29 : 31;
+  const cardHeight = Math.min(
+    height - topInset - bottomInset - (isVerySmall ? 54 : 68),
+    isTabletLike ? 840 : 760
+  );
 
-  const descFontSize = isSE ? 13 : isVerySmall ? 14 : isSmall ? 15 : 16;
-  const descLineHeight = isSE ? 18 : isVerySmall ? 20 : isSmall ? 21 : 22;
+  const titleFontSize = isTabletLike ? 30 : isVerySmall ? 20 : isSmall ? 22 : isMedium ? 24 : 26;
+  const titleLineHeight = isTabletLike ? 36 : isVerySmall ? 24 : isSmall ? 27 : isMedium ? 30 : 32;
 
-  const titleMarginBottom = isSE ? 10 : isVerySmall ? 14 : 18;
-  const textBlockTop = isSE ? 52 : isVerySmall ? 62 : isSmall ? 72 : 84;
+  const descFontSize = isTabletLike ? 17 : isVerySmall ? 13 : isSmall ? 14 : 15;
+  const descLineHeight = isTabletLike ? 24 : isVerySmall ? 18 : isSmall ? 20 : 22;
 
-  const buttonHeight = isSE ? 44 : isVerySmall ? 46 : isSmall ? 48 : 52;
-  const buttonFontSize = isSE ? 15 : isVerySmall ? 16 : 18;
+  const titleMarginBottom = isVerySmall ? 10 : isSmall ? 12 : 16;
+  const topContentPadding = isTabletLike ? 86 : isVerySmall ? 48 : isSmall ? 58 : isMedium ? 70 : 82;
 
-  const paginationTop = insets.top + (isSE ? 6 : isVerySmall ? 8 : 14);
+  const imageAreaHeight = isTabletLike ? 340 : isVerySmall ? 170 : isSmall ? 210 : isMedium ? 245 : 285;
+  const textAreaMinHeight = isTabletLike ? 260 : isVerySmall ? 170 : isSmall ? 190 : isMedium ? 215 : 235;
 
-  const textAreaHeight = isSE ? 180 : isVerySmall ? 210 : isSmall ? 230 : 250;
-  const imageAreaHeight = isSE ? 180 : isVerySmall ? 210 : isSmall ? 250 : 290;
+  const buttonHeight = isTabletLike ? 58 : isVerySmall ? 46 : isSmall ? 48 : 52;
+  const buttonFontSize = isTabletLike ? 19 : isVerySmall ? 15 : isSmall ? 16 : 18;
+  const buttonBottomSpacing = isTabletLike ? 22 : isVerySmall ? 12 : isSmall ? 14 : 18;
+  const buttonWidth = Math.min(cardWidth * 0.88, isTabletLike ? 340 : 320);
+
+  const paginationTop = topInset + (isVerySmall ? 8 : isSmall ? 10 : 14);
+  const dotSize = isVerySmall ? 9 : 10;
+  const activeDotWidth = isVerySmall ? 22 : 26;
 
   const getImageSize = (style?: { width?: number; height?: number }) => {
-    const scale = isSE ? 0.64 : isVerySmall ? 0.74 : isSmall ? 0.84 : 1;
+    const baseWidth = style?.width ?? 260;
+    const baseHeight = style?.height ?? 260;
+
+    const scale = isTabletLike ? 1.08 : isVerySmall ? 0.62 : isSmall ? 0.75 : isMedium ? 0.86 : 1;
 
     return {
-      width: (style?.width ?? 260) * scale,
-      height: (style?.height ?? 260) * scale,
+      width: baseWidth * scale,
+      height: baseHeight * scale,
     };
   };
 
@@ -201,15 +215,16 @@ export default function IntroScreen({ navigation }: Props) {
             styles.contentBox,
             {
               width: cardWidth,
-              height: cardHeight,
-              paddingTop: textBlockTop,
-              paddingHorizontal: horizontalPadding,
+              minHeight: cardHeight,
+              paddingTop: topContentPadding,
+              paddingHorizontal: sidePadding,
+              paddingBottom: buttonBottomSpacing,
               opacity: fadeAnim,
               transform: [{ translateY: translateAnim }, { scale: scaleAnim }],
             },
           ]}
         >
-          <View style={[styles.textArea, { minHeight: textAreaHeight }]}>
+          <View style={[styles.textArea, { minHeight: textAreaMinHeight }]}>
             <Text
               style={[
                 styles.title,
@@ -251,7 +266,9 @@ export default function IntroScreen({ navigation }: Props) {
             style={[
               styles.button,
               {
+                width: buttonWidth,
                 height: buttonHeight,
+                borderRadius: buttonHeight / 2,
               },
             ]}
             onPress={handleNext}
@@ -299,7 +316,15 @@ export default function IntroScreen({ navigation }: Props) {
             return (
               <View
                 key={index}
-                style={[styles.dot, active && styles.activeDot]}
+                style={[
+                  styles.dot,
+                  {
+                    width: active ? activeDotWidth : dotSize,
+                    height: dotSize,
+                    borderRadius: dotSize / 2,
+                  },
+                  active && styles.activeDot,
+                ]}
               />
             );
           })}
@@ -312,8 +337,6 @@ export default function IntroScreen({ navigation }: Props) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    width: SCREEN_WIDTH,
-    height: SCREEN_HEIGHT,
   },
   darkOverlay: {
     flex: 1,
@@ -321,6 +344,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   page: {
+    flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -348,11 +372,10 @@ const styles = StyleSheet.create({
   imageArea: {
     width: '100%',
     alignItems: 'center',
-    justifyContent: 'flex-end',
+    justifyContent: 'center',
+    flexShrink: 1,
   },
   button: {
-    width: '88%',
-    borderRadius: 28,
     backgroundColor: '#4D7E37',
     borderWidth: 1.2,
     borderColor: 'rgba(188, 226, 107, 0.45)',
@@ -364,10 +387,13 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     shadowOffset: { width: 0, height: 4 },
     elevation: 5,
+    alignSelf: 'center',
   },
   buttonText: {
     color: '#F5F5F5',
     fontWeight: '800',
+    textAlign: 'center',
+    paddingHorizontal: 12,
   },
   pagination: {
     position: 'absolute',
@@ -378,13 +404,9 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   dot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
     backgroundColor: 'rgba(255,255,255,0.28)',
   },
   activeDot: {
-    width: 26,
     backgroundColor: '#D8EE3B',
   },
 });
