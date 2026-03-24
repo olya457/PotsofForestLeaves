@@ -6,19 +6,20 @@ import {
   Image,
   ImageBackground,
   ScrollView,
+  Share,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
   useWindowDimensions,
-  Share,
 } from 'react-native';
-import { useNavigation, useFocusEffect } from '@react-navigation/native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { crosswordLevels, CrosswordLevel, CrosswordPlacement } from '../data/crosswordLevels';
 
 type ScreenStage = 'intro' | 'play' | 'result';
+type WordDirection = 'across' | 'down';
 
 type GridCell = {
   row: number;
@@ -27,6 +28,8 @@ type GridCell = {
   isActive: boolean;
   number?: number;
   key: string;
+  acrossWordIds: string[];
+  downWordIds: string[];
 };
 
 type NumberedClue = {
@@ -34,21 +37,47 @@ type NumberedClue = {
   number: number;
   clue: string;
   answer: string;
+  direction: WordDirection;
+  startKey: string;
+  cellKeys: string[];
+};
+
+type WordMapItem = {
+  id: string;
+  clue: string;
+  answer: string;
+  direction: WordDirection;
+  number: number;
+  startKey: string;
+  cellKeys: string[];
 };
 
 const STORAGE_KEY = 'pots_forest_crossword_unlocked_level';
 
 const KEYBOARD_ROWS = [
   ['A', 'B', 'C', 'D', 'E', 'F', 'G'],
-  ['H', 'I', 'L', 'M', 'N', 'O', 'P'],
-  ['Q', 'R', 'S', 'T', 'U', 'V', 'W'],
-  ['Y', 'K', 'CLEAR', '⌫'],
+  ['H', 'I', 'J', 'K', 'L', 'M', 'N'],
+  ['O', 'P', 'Q', 'R', 'S', 'T', 'U'],
+  ['V', 'W', 'X', 'Y', 'Z', 'CLEAR', '⌫'],
 ];
+
+function buildWordCellKeys(placement: CrosswordPlacement) {
+  return placement.word
+    .toUpperCase()
+    .split('')
+    .map((_, index) => {
+      const row = placement.direction === 'across' ? placement.row : placement.row + index;
+      const col = placement.direction === 'across' ? placement.col + index : placement.col;
+      return `${row}-${col}`;
+    });
+}
 
 function createGrid(level: CrosswordLevel) {
   const matrix: Array<Array<GridCell | null>> = Array.from({ length: level.size }, (_, row) =>
     Array.from({ length: level.size }, (_, col) => null)
   );
+
+  const startMap = new Map<string, CrosswordPlacement[]>();
 
   level.placements.forEach(placement => {
     const letters = placement.word.toUpperCase().split('');
@@ -56,6 +85,7 @@ function createGrid(level: CrosswordLevel) {
     letters.forEach((letter, index) => {
       const row = placement.direction === 'across' ? placement.row : placement.row + index;
       const col = placement.direction === 'across' ? placement.col + index : placement.col;
+      const key = `${row}-${col}`;
 
       const existing = matrix[row][col];
 
@@ -63,16 +93,33 @@ function createGrid(level: CrosswordLevel) {
         throw new Error(`Crossword conflict in level ${level.id} at row ${row}, col ${col}`);
       }
 
-      matrix[row][col] = {
-        row,
-        col,
-        letter,
-        isActive: true,
-        key: `${row}-${col}`,
-      };
+      if (!existing) {
+        matrix[row][col] = {
+          row,
+          col,
+          letter,
+          isActive: true,
+          key,
+          acrossWordIds: [],
+          downWordIds: [],
+        };
+      }
+
+      const current = matrix[row][col] as GridCell;
+
+      if (placement.direction === 'across') {
+        current.acrossWordIds = [...new Set([...current.acrossWordIds, placement.id])];
+      } else {
+        current.downWordIds = [...new Set([...current.downWordIds, placement.id])];
+      }
     });
+
+    const startKey = `${placement.row}-${placement.col}`;
+    const existingStarts = startMap.get(startKey) ?? [];
+    startMap.set(startKey, [...existingStarts, placement]);
   });
 
+  const wordsById: Record<string, WordMapItem> = {};
   const cluesAcross: NumberedClue[] = [];
   const cluesDown: NumberedClue[] = [];
 
@@ -80,47 +127,49 @@ function createGrid(level: CrosswordLevel) {
 
   for (let row = 0; row < level.size; row += 1) {
     for (let col = 0; col < level.size; col += 1) {
+      const key = `${row}-${col}`;
       const cell = matrix[row][col];
       if (!cell) continue;
 
-      const startsAcross = !!level.placements.find(
-        p => p.direction === 'across' && p.row === row && p.col === col
-      );
-      const startsDown = !!level.placements.find(
-        p => p.direction === 'down' && p.row === row && p.col === col
-      );
+      const startsHere = startMap.get(key) ?? [];
 
-      if (startsAcross || startsDown) {
+      if (startsHere.length > 0) {
         matrix[row][col] = {
           ...cell,
           number: currentNumber,
         };
 
-        if (startsAcross) {
-          const placement = level.placements.find(
-            p => p.direction === 'across' && p.row === row && p.col === col
-          ) as CrosswordPlacement;
+        startsHere.forEach(placement => {
+          const cellKeys = buildWordCellKeys(placement);
 
-          cluesAcross.push({
+          const item: WordMapItem = {
+            id: placement.id,
+            clue: placement.clue,
+            answer: placement.word.toUpperCase(),
+            direction: placement.direction,
+            number: currentNumber,
+            startKey: key,
+            cellKeys,
+          };
+
+          wordsById[placement.id] = item;
+
+          const clueItem: NumberedClue = {
             id: placement.id,
             number: currentNumber,
             clue: placement.clue,
             answer: placement.word.toUpperCase(),
-          });
-        }
+            direction: placement.direction,
+            startKey: key,
+            cellKeys,
+          };
 
-        if (startsDown) {
-          const placement = level.placements.find(
-            p => p.direction === 'down' && p.row === row && p.col === col
-          ) as CrosswordPlacement;
-
-          cluesDown.push({
-            id: placement.id,
-            number: currentNumber,
-            clue: placement.clue,
-            answer: placement.word.toUpperCase(),
-          });
-        }
+          if (placement.direction === 'across') {
+            cluesAcross.push(clueItem);
+          } else {
+            cluesDown.push(clueItem);
+          }
+        });
 
         currentNumber += 1;
       }
@@ -131,6 +180,7 @@ function createGrid(level: CrosswordLevel) {
     matrix,
     cluesAcross,
     cluesDown,
+    wordsById,
   };
 }
 
@@ -138,29 +188,31 @@ function makeEmptyEntries(matrix: Array<Array<GridCell | null>>) {
   const result: Record<string, string> = {};
   matrix.forEach(row => {
     row.forEach(cell => {
-      if (cell?.isActive) result[cell.key] = '';
+      if (cell?.isActive) {
+        result[cell.key] = '';
+      }
     });
   });
   return result;
 }
 
-function getFirstActiveKey(matrix: Array<Array<GridCell | null>>) {
-  for (const row of matrix) {
-    for (const cell of row) {
-      if (cell?.isActive) return cell.key;
-    }
-  }
-  return null;
+function getFirstWordId(wordsById: Record<string, WordMapItem>) {
+  const sorted = Object.values(wordsById).sort((a, b) => {
+    if (a.number !== b.number) return a.number - b.number;
+    if (a.direction === b.direction) return 0;
+    return a.direction === 'across' ? -1 : 1;
+  });
+
+  return sorted[0]?.id ?? null;
 }
 
-function getActiveKeys(matrix: Array<Array<GridCell | null>>) {
-  const keys: string[] = [];
-  matrix.forEach(row => {
-    row.forEach(cell => {
-      if (cell?.isActive) keys.push(cell.key);
-    });
-  });
-  return keys;
+function getCellByKey(matrix: Array<Array<GridCell | null>>, key: string | null) {
+  if (!key) return null;
+  const [rowText, colText] = key.split('-');
+  const row = Number(rowText);
+  const col = Number(colText);
+  if (Number.isNaN(row) || Number.isNaN(col)) return null;
+  return matrix[row]?.[col] ?? null;
 }
 
 export default function CrosswordScreen() {
@@ -177,6 +229,8 @@ export default function CrosswordScreen() {
   const [entries, setEntries] = useState<Record<string, string>>({});
   const [completedLevelIndex, setCompletedLevelIndex] = useState<number | null>(null);
   const [selectedCellKey, setSelectedCellKey] = useState<string | null>(null);
+  const [selectedWordId, setSelectedWordId] = useState<string | null>(null);
+  const [selectedDirection, setSelectedDirection] = useState<WordDirection>('across');
   const [showKeyboard, setShowKeyboard] = useState(false);
 
   const fadeAnim = useRef(new Animated.Value(0)).current;
@@ -184,18 +238,21 @@ export default function CrosswordScreen() {
   const scaleAnim = useRef(new Animated.Value(0.98)).current;
 
   const currentLevel = crosswordLevels[unlockedLevelIndex];
-  const { matrix, cluesAcross, cluesDown } = useMemo(
-    () => createGrid(currentLevel),
-    [currentLevel]
-  );
 
-  const activeKeys = useMemo(() => getActiveKeys(matrix), [matrix]);
+  const { matrix, cluesAcross, cluesDown, wordsById } = useMemo(() => {
+    return createGrid(currentLevel);
+  }, [currentLevel]);
 
-  const activeCellsCount = useMemo(() => matrix.flat().filter(Boolean).length, [matrix]);
-  const progressFilled = useMemo(
-    () => Object.values(entries).filter(value => value.trim().length > 0).length,
-    [entries]
-  );
+  const selectedWord = selectedWordId ? wordsById[selectedWordId] ?? null : null;
+
+  const activeCellsCount = useMemo(() => {
+    return matrix.flat().filter(Boolean).length;
+  }, [matrix]);
+
+  const progressFilled = useMemo(() => {
+    return Object.values(entries).filter(value => value.trim().length > 0).length;
+  }, [entries]);
+
   const progressPercent = activeCellsCount > 0 ? (progressFilled / activeCellsCount) * 100 : 0;
 
   const cellSize = useMemo(() => {
@@ -251,20 +308,20 @@ export default function CrosswordScreen() {
     ]).start();
   }, [fadeAnim, moveAnim, scaleAnim]);
 
-  const resetToIntro = useCallback(() => {
-    setStage('intro');
-    setEntries(makeEmptyEntries(matrix));
-    setCompletedLevelIndex(null);
-    setSelectedCellKey(getFirstActiveKey(matrix));
-    setShowKeyboard(false);
-  }, [matrix]);
+  const applyInitialSelection = useCallback(() => {
+    const firstWordId = getFirstWordId(wordsById);
+    const firstWord = firstWordId ? wordsById[firstWordId] : null;
+    setSelectedWordId(firstWordId);
+    setSelectedDirection(firstWord?.direction ?? 'across');
+    setSelectedCellKey(firstWord?.cellKeys[0] ?? null);
+  }, [wordsById]);
 
   const loadProgress = useCallback(async () => {
     try {
-      const raw = await AsyncStorage.getItem(STORAGE_KEY);
-      const parsed = raw ? Number(raw) : 0;
+      const saved = await AsyncStorage.getItem(STORAGE_KEY);
+      const parsed = saved ? Number(saved) : 0;
 
-      if (Number.isFinite(parsed) && parsed >= 0 && parsed < crosswordLevels.length) {
+      if (!Number.isNaN(parsed) && parsed >= 0 && parsed < crosswordLevels.length) {
         setUnlockedLevelIndex(parsed);
       } else {
         setUnlockedLevelIndex(0);
@@ -287,27 +344,25 @@ export default function CrosswordScreen() {
   }, [loadProgress]);
 
   useEffect(() => {
-    if (isReady) {
-      setEntries(makeEmptyEntries(matrix));
-      setStage('intro');
-      setCompletedLevelIndex(null);
-      setSelectedCellKey(getFirstActiveKey(matrix));
-      setShowKeyboard(false);
-      playAppearAnimation();
-    }
-  }, [isReady, matrix, playAppearAnimation]);
+    if (!isReady) return;
+    setEntries(makeEmptyEntries(matrix));
+    setStage('intro');
+    setCompletedLevelIndex(null);
+    setShowKeyboard(false);
+    applyInitialSelection();
+    playAppearAnimation();
+  }, [isReady, matrix, applyInitialSelection, playAppearAnimation]);
 
   useFocusEffect(
     useCallback(() => {
-      if (isReady) {
-        setStage('intro');
-        setEntries(makeEmptyEntries(matrix));
-        setCompletedLevelIndex(null);
-        setSelectedCellKey(getFirstActiveKey(matrix));
-        setShowKeyboard(false);
-        playAppearAnimation();
-      }
-    }, [isReady, matrix, playAppearAnimation])
+      if (!isReady) return;
+      setStage('intro');
+      setEntries(makeEmptyEntries(matrix));
+      setCompletedLevelIndex(null);
+      setShowKeyboard(false);
+      applyInitialSelection();
+      playAppearAnimation();
+    }, [isReady, matrix, applyInitialSelection, playAppearAnimation])
   );
 
   useEffect(() => {
@@ -316,70 +371,191 @@ export default function CrosswordScreen() {
     }
   }, [stage, unlockedLevelIndex, playAppearAnimation, isReady]);
 
-  const moveSelectionToNext = useCallback(
-    (fromKey: string) => {
-      const index = activeKeys.indexOf(fromKey);
-      if (index === -1) return;
-      const nextKey = activeKeys[index + 1] ?? fromKey;
-      setSelectedCellKey(nextKey);
+  const selectWord = useCallback(
+    (wordId: string, preferredCellKey?: string | null) => {
+      const word = wordsById[wordId];
+      if (!word) return;
+
+      setSelectedWordId(wordId);
+      setSelectedDirection(word.direction);
+
+      if (preferredCellKey && word.cellKeys.includes(preferredCellKey)) {
+        setSelectedCellKey(preferredCellKey);
+      } else {
+        const firstEmptyKey = word.cellKeys.find(key => !(entries[key] ?? '').trim());
+        setSelectedCellKey(firstEmptyKey ?? word.cellKeys[0] ?? null);
+      }
+
+      setShowKeyboard(true);
     },
-    [activeKeys]
+    [entries, wordsById]
   );
 
-  const moveSelectionToPrev = useCallback(
-    (fromKey: string) => {
-      const index = activeKeys.indexOf(fromKey);
-      if (index === -1) return;
-      const prevKey = activeKeys[index - 1] ?? fromKey;
-      setSelectedCellKey(prevKey);
+  const moveSelectionInsideWord = useCallback(
+    (directionStep: 1 | -1, fromKey?: string | null) => {
+      if (!selectedWord) return;
+      const currentKey = fromKey ?? selectedCellKey;
+      const currentIndex = selectedWord.cellKeys.indexOf(currentKey ?? '');
+
+      if (currentIndex === -1) {
+        setSelectedCellKey(selectedWord.cellKeys[0] ?? null);
+        return;
+      }
+
+      const nextIndex = currentIndex + directionStep;
+
+      if (nextIndex < 0) {
+        setSelectedCellKey(selectedWord.cellKeys[0] ?? null);
+        return;
+      }
+
+      if (nextIndex >= selectedWord.cellKeys.length) {
+        setSelectedCellKey(selectedWord.cellKeys[selectedWord.cellKeys.length - 1] ?? null);
+        return;
+      }
+
+      setSelectedCellKey(selectedWord.cellKeys[nextIndex]);
     },
-    [activeKeys]
+    [selectedCellKey, selectedWord]
   );
 
-  const handleKeyboardPress = (value: string) => {
-    if (!selectedCellKey) return;
+  const handleKeyboardPress = useCallback(
+    (value: string) => {
+      if (!selectedCellKey || !selectedWord) return;
 
-    if (value === 'CLEAR') {
-      setEntries(makeEmptyEntries(matrix));
-      setSelectedCellKey(getFirstActiveKey(matrix));
-      return;
-    }
+      if (value === 'CLEAR') {
+        const nextEntries = { ...entries };
+        selectedWord.cellKeys.forEach(key => {
+          nextEntries[key] = '';
+        });
+        setEntries(nextEntries);
+        setSelectedCellKey(selectedWord.cellKeys[0] ?? null);
+        return;
+      }
 
-    if (value === '⌫') {
+      if (value === '⌫') {
+        const currentValue = entries[selectedCellKey] ?? '';
+
+        if (currentValue) {
+          setEntries(prev => ({
+            ...prev,
+            [selectedCellKey]: '',
+          }));
+          return;
+        }
+
+        const currentIndex = selectedWord.cellKeys.indexOf(selectedCellKey);
+        const prevIndex = currentIndex > 0 ? currentIndex - 1 : 0;
+        const prevKey = selectedWord.cellKeys[prevIndex] ?? selectedCellKey;
+
+        setEntries(prev => ({
+          ...prev,
+          [prevKey]: '',
+        }));
+        setSelectedCellKey(prevKey);
+        return;
+      }
+
       setEntries(prev => ({
         ...prev,
-        [selectedCellKey]: '',
+        [selectedCellKey]: value,
       }));
-      moveSelectionToPrev(selectedCellKey);
-      return;
-    }
 
-    setEntries(prev => ({
-      ...prev,
-      [selectedCellKey]: value,
-    }));
-    moveSelectionToNext(selectedCellKey);
-  };
+      const currentIndex = selectedWord.cellKeys.indexOf(selectedCellKey);
+      const nextIndex = currentIndex + 1;
 
-  const handleOpenCrossword = () => {
-    const empty = makeEmptyEntries(matrix);
-    setEntries(empty);
-    setSelectedCellKey(getFirstActiveKey(matrix));
-    setShowKeyboard(false);
-    setStage('play');
-  };
+      if (nextIndex < selectedWord.cellKeys.length) {
+        setSelectedCellKey(selectedWord.cellKeys[nextIndex]);
+      }
+    },
+    [entries, selectedCellKey, selectedWord]
+  );
 
-  const handleClear = () => {
+  const handleOpenCrossword = useCallback(() => {
     setEntries(makeEmptyEntries(matrix));
-    setSelectedCellKey(getFirstActiveKey(matrix));
-  };
-
-  const handleCellPress = (cellKey: string) => {
-    setSelectedCellKey(cellKey);
+    applyInitialSelection();
     setShowKeyboard(true);
-  };
+    setStage('play');
+  }, [matrix, applyInitialSelection]);
 
-  const handleCheck = async () => {
+  const handleClear = useCallback(() => {
+    setEntries(makeEmptyEntries(matrix));
+    applyInitialSelection();
+  }, [matrix, applyInitialSelection]);
+
+  const handleCellPress = useCallback(
+    (cellKey: string) => {
+      const cell = getCellByKey(matrix, cellKey);
+      if (!cell) return;
+
+      const hasAcross = cell.acrossWordIds.length > 0;
+      const hasDown = cell.downWordIds.length > 0;
+
+      if (hasAcross && hasDown) {
+        if (selectedCellKey === cellKey) {
+          if (selectedDirection === 'across') {
+            const nextWordId = cell.downWordIds[0];
+            if (nextWordId) {
+              selectWord(nextWordId, cellKey);
+              return;
+            }
+          } else {
+            const nextWordId = cell.acrossWordIds[0];
+            if (nextWordId) {
+              selectWord(nextWordId, cellKey);
+              return;
+            }
+          }
+        }
+
+        const currentWordFits =
+          selectedWord &&
+          selectedWord.cellKeys.includes(cellKey) &&
+          selectedWord.direction === selectedDirection;
+
+        if (currentWordFits) {
+          setSelectedCellKey(cellKey);
+          setShowKeyboard(true);
+          return;
+        }
+
+        const preferredWordId =
+          selectedDirection === 'across'
+            ? cell.acrossWordIds[0] ?? cell.downWordIds[0]
+            : cell.downWordIds[0] ?? cell.acrossWordIds[0];
+
+        if (preferredWordId) {
+          selectWord(preferredWordId, cellKey);
+        }
+        return;
+      }
+
+      if (hasAcross) {
+        const wordId = cell.acrossWordIds[0];
+        if (wordId) {
+          selectWord(wordId, cellKey);
+        }
+        return;
+      }
+
+      if (hasDown) {
+        const wordId = cell.downWordIds[0];
+        if (wordId) {
+          selectWord(wordId, cellKey);
+        }
+      }
+    },
+    [matrix, selectedCellKey, selectedDirection, selectedWord, selectWord]
+  );
+
+  const handleCluePress = useCallback(
+    (clueId: string) => {
+      selectWord(clueId);
+    },
+    [selectWord]
+  );
+
+  const handleCheck = useCallback(async () => {
     const hasEmpty = Object.values(entries).some(value => !value.trim());
 
     if (hasEmpty) {
@@ -411,33 +587,42 @@ export default function CrosswordScreen() {
     }
 
     setStage('result');
-  };
+  }, [entries, matrix, saveProgress, unlockedLevelIndex]);
 
-  const handleNextLevel = () => {
-    const nextMatrix = createGrid(crosswordLevels[unlockedLevelIndex]).matrix;
-    setEntries(makeEmptyEntries(nextMatrix));
-    setSelectedCellKey(getFirstActiveKey(nextMatrix));
+  const handleNextLevel = useCallback(() => {
+    const nextLevel = crosswordLevels[unlockedLevelIndex];
+    const nextGrid = createGrid(nextLevel);
+    setEntries(makeEmptyEntries(nextGrid.matrix));
+    const firstWordId = getFirstWordId(nextGrid.wordsById);
+    const firstWord = firstWordId ? nextGrid.wordsById[firstWordId] : null;
+    setSelectedWordId(firstWordId);
+    setSelectedDirection(firstWord?.direction ?? 'across');
+    setSelectedCellKey(firstWord?.cellKeys[0] ?? null);
     setShowKeyboard(false);
     setStage('intro');
-  };
+  }, [unlockedLevelIndex]);
 
-  const handleRestartLevel = () => {
+  const handleRestartLevel = useCallback(() => {
     const levelToShow = crosswordLevels[completedLevelIndex ?? unlockedLevelIndex];
-    const levelMatrix = createGrid(levelToShow).matrix;
-    setEntries(makeEmptyEntries(levelMatrix));
-    setSelectedCellKey(getFirstActiveKey(levelMatrix));
+    const levelGrid = createGrid(levelToShow);
+    setEntries(makeEmptyEntries(levelGrid.matrix));
+    const firstWordId = getFirstWordId(levelGrid.wordsById);
+    const firstWord = firstWordId ? levelGrid.wordsById[firstWordId] : null;
+    setSelectedWordId(firstWordId);
+    setSelectedDirection(firstWord?.direction ?? 'across');
+    setSelectedCellKey(firstWord?.cellKeys[0] ?? null);
     setShowKeyboard(false);
     setStage('intro');
-  };
+  }, [completedLevelIndex, unlockedLevelIndex]);
 
-  const handleShare = async () => {
+  const handleShare = useCallback(async () => {
     try {
       const shownLevel = (completedLevelIndex ?? unlockedLevelIndex) + 1;
       await Share.share({
         message: `I completed crossword level ${shownLevel} in Pots of Forest Leaves!`,
       });
     } catch {}
-  };
+  }, [completedLevelIndex, unlockedLevelIndex]);
 
   if (!isReady) {
     return (
@@ -564,6 +749,15 @@ export default function CrosswordScreen() {
                   </Text>
                 </View>
 
+                {selectedWord ? (
+                  <View style={styles.selectedWordWrap}>
+                    <Text style={styles.selectedWordLabel}>
+                      {selectedWord.direction === 'across' ? 'Across' : 'Down'} {selectedWord.number}
+                    </Text>
+                    <Text style={styles.selectedWordText}>{selectedWord.clue}</Text>
+                  </View>
+                ) : null}
+
                 <View style={[styles.gridWrap, { padding: isVerySmall ? 4 : 6 }]}>
                   {matrix.map((row, rowIndex) => (
                     <View key={`row-${rowIndex}`} style={styles.gridRow}>
@@ -584,6 +778,8 @@ export default function CrosswordScreen() {
                         }
 
                         const isSelected = selectedCellKey === cell.key;
+                        const isInSelectedWord =
+                          selectedWord?.cellKeys.includes(cell.key) ?? false;
 
                         return (
                           <TouchableOpacity
@@ -592,6 +788,7 @@ export default function CrosswordScreen() {
                             onPress={() => handleCellPress(cell.key)}
                             style={[
                               styles.activeCell,
+                              isInSelectedWord && styles.wordCell,
                               isSelected && styles.selectedCell,
                               {
                                 width: cellSize,
@@ -624,7 +821,9 @@ export default function CrosswordScreen() {
                   <View style={styles.inlineKeyboardWrap}>
                     <View style={styles.selectedBox}>
                       <Text style={styles.selectedBoxText}>
-                        Selected: {selectedCellKey ?? '—'}
+                        {selectedWord
+                          ? `${selectedWord.direction === 'across' ? 'Across' : 'Down'} ${selectedWord.number}`
+                          : 'Selected'}
                       </Text>
                     </View>
 
@@ -666,22 +865,43 @@ export default function CrosswordScreen() {
                   </View>
                 )}
 
-                <View style={styles.cluesCard}>
-                  <Text style={[styles.cluesTitle, { fontSize: clueTitleSize }]}>Across</Text>
-                  {cluesAcross.map(clue => (
-                    <Text
-                      key={clue.id}
-                      style={[
-                        styles.clueText,
-                        {
-                          fontSize: clueTextSize,
-                          lineHeight: clueTextLine,
-                        },
-                      ]}
-                    >
-                      {clue.number}. {clue.clue}
-                    </Text>
-                  ))}
+                <View style={styles.cluesWrap}>
+                  <Text
+                    style={[
+                      styles.cluesTitle,
+                      {
+                        fontSize: clueTitleSize,
+                      },
+                    ]}
+                  >
+                    Across
+                  </Text>
+
+                  {cluesAcross.map(clue => {
+                    const isActive = selectedWordId === clue.id;
+
+                    return (
+                      <TouchableOpacity
+                        key={clue.id}
+                        activeOpacity={0.85}
+                        onPress={() => handleCluePress(clue.id)}
+                        style={[styles.clueButton, isActive && styles.clueButtonActive]}
+                      >
+                        <Text
+                          style={[
+                            styles.clueText,
+                            isActive && styles.clueTextActive,
+                            {
+                              fontSize: clueTextSize,
+                              lineHeight: clueTextLine,
+                            },
+                          ]}
+                        >
+                          {clue.number}. {clue.clue}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
 
                   <Text
                     style={[
@@ -694,20 +914,32 @@ export default function CrosswordScreen() {
                   >
                     Down
                   </Text>
-                  {cluesDown.map(clue => (
-                    <Text
-                      key={clue.id}
-                      style={[
-                        styles.clueText,
-                        {
-                          fontSize: clueTextSize,
-                          lineHeight: clueTextLine,
-                        },
-                      ]}
-                    >
-                      {clue.number}. {clue.clue}
-                    </Text>
-                  ))}
+
+                  {cluesDown.map(clue => {
+                    const isActive = selectedWordId === clue.id;
+
+                    return (
+                      <TouchableOpacity
+                        key={clue.id}
+                        activeOpacity={0.85}
+                        onPress={() => handleCluePress(clue.id)}
+                        style={[styles.clueButton, isActive && styles.clueButtonActive]}
+                      >
+                        <Text
+                          style={[
+                            styles.clueText,
+                            isActive && styles.clueTextActive,
+                            {
+                              fontSize: clueTextSize,
+                              lineHeight: clueTextLine,
+                            },
+                          ]}
+                        >
+                          {clue.number}. {clue.clue}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
                 </View>
 
                 <TouchableOpacity
@@ -819,245 +1051,278 @@ const styles = StyleSheet.create({
   screen: {
     flex: 1,
   },
-  animatedWrap: {
-    flex: 1,
-  },
   topBar: {
+    minHeight: 42,
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 8,
+    justifyContent: 'space-between',
   },
   settingsButton: {
     width: 38,
     height: 38,
     borderRadius: 19,
-    backgroundColor: '#6B3E1E',
+    backgroundColor: 'rgba(24,54,33,0.72)',
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
-    borderColor: 'rgba(255, 224, 169, 0.28)',
+    borderColor: 'rgba(229,228,198,0.28)',
   },
   settingsText: {
-    fontSize: 16,
+    fontSize: 18,
+  },
+  animatedWrap: {
+    flex: 1,
   },
   centerWrap: {
-    flexGrow: 1,
+    flex: 1,
     alignItems: 'center',
-    justifyContent: 'flex-start',
+    justifyContent: 'center',
   },
   introTitle: {
-    color: '#D8EE3B',
+    color: '#F4F0DE',
     fontWeight: '900',
     textAlign: 'center',
-    marginTop: 14,
   },
   introLevel: {
-    color: '#F5F7F0',
-    fontSize: 14,
-    fontWeight: '700',
     marginTop: 8,
+    color: '#E9D89B',
+    fontSize: 15,
+    fontWeight: '800',
     textAlign: 'center',
   },
   introText: {
-    color: '#FFF8E8',
-    fontWeight: '500',
-    textAlign: 'center',
     marginTop: 10,
+    color: '#F4F0DE',
+    fontWeight: '600',
+    textAlign: 'center',
   },
   playWrap: {
     alignItems: 'center',
   },
   playTitle: {
-    color: '#D8EE3B',
+    color: '#F4F0DE',
     fontWeight: '900',
     textAlign: 'center',
-    marginTop: 2,
-    marginBottom: 8,
+    marginBottom: 10,
   },
   progressBarBg: {
     width: '100%',
-    height: 16,
-    borderRadius: 8,
-    backgroundColor: '#E7D5B2',
+    maxWidth: 360,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: 'rgba(28,48,35,0.72)',
     overflow: 'hidden',
     justifyContent: 'center',
-    marginBottom: 10,
+    marginBottom: 12,
     borderWidth: 1,
-    borderColor: 'rgba(96, 58, 20, 0.35)',
+    borderColor: 'rgba(229,228,198,0.25)',
   },
   progressBarFill: {
     position: 'absolute',
     left: 0,
     top: 0,
     bottom: 0,
-    backgroundColor: '#769B2D',
-    borderRadius: 8,
+    backgroundColor: '#6AAE5B',
   },
   progressText: {
-    alignSelf: 'center',
-    color: '#5A3719',
-    fontSize: 9,
+    color: '#F4F0DE',
     fontWeight: '800',
+    textAlign: 'center',
+    fontSize: 12,
+  },
+  selectedWordWrap: {
+    width: '100%',
+    maxWidth: 360,
+    borderRadius: 16,
+    backgroundColor: 'rgba(24,54,33,0.76)',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(229,228,198,0.24)',
+  },
+  selectedWordLabel: {
+    color: '#E9D89B',
+    fontSize: 12,
+    fontWeight: '800',
+    marginBottom: 4,
+  },
+  selectedWordText: {
+    color: '#F4F0DE',
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '600',
   },
   gridWrap: {
-    borderRadius: 16,
-    backgroundColor: 'rgba(109, 58, 24, 0.95)',
+    borderRadius: 18,
+    backgroundColor: 'rgba(16,35,24,0.76)',
     borderWidth: 1,
-    borderColor: 'rgba(255, 213, 153, 0.18)',
-    marginBottom: 10,
+    borderColor: 'rgba(229,228,198,0.24)',
+    marginBottom: 14,
   },
   gridRow: {
     flexDirection: 'row',
   },
   blockCell: {
-    margin: 1.5,
-    borderRadius: 5,
-    backgroundColor: 'rgba(35, 22, 12, 0.45)',
+    backgroundColor: 'transparent',
   },
   activeCell: {
-    margin: 1.5,
-    borderRadius: 5,
-    backgroundColor: '#F4E2BF',
+    backgroundColor: '#F6F0CF',
     borderWidth: 1,
-    borderColor: 'rgba(96, 58, 20, 0.35)',
-    justifyContent: 'center',
+    borderColor: '#A58E53',
     alignItems: 'center',
+    justifyContent: 'center',
     position: 'relative',
   },
+  wordCell: {
+    backgroundColor: '#E8E0B6',
+  },
   selectedCell: {
-    borderColor: '#D8EE3B',
+    backgroundColor: '#FFD66B',
+    borderColor: '#6A4B00',
     borderWidth: 2,
   },
   cellNumber: {
     position: 'absolute',
     top: 1,
     left: 2,
-    fontSize: 6,
-    color: '#6A4523',
+    fontSize: 8,
+    color: '#5C4A15',
     fontWeight: '800',
   },
   cellLetter: {
-    color: '#533218',
+    color: '#1A1A1A',
     fontWeight: '900',
     textAlign: 'center',
   },
   inlineKeyboardWrap: {
     width: '100%',
-    borderRadius: 12,
-    backgroundColor: 'rgba(32, 22, 14, 0.96)',
+    maxWidth: 360,
+    borderRadius: 18,
+    backgroundColor: 'rgba(24,54,33,0.82)',
     borderWidth: 1,
-    borderColor: 'rgba(255, 213, 153, 0.10)',
-    paddingTop: 3,
-    paddingHorizontal: 3,
-    paddingBottom: 4,
-    marginBottom: 10,
+    borderColor: 'rgba(229,228,198,0.24)',
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    marginBottom: 14,
   },
   selectedBox: {
-    alignSelf: 'center',
-    minWidth: 78,
-    height: 18,
-    borderRadius: 9,
-    backgroundColor: 'rgba(109, 58, 24, 0.92)',
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: 'rgba(0,0,0,0.16)',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 8,
-    marginBottom: 3,
+    marginBottom: 8,
   },
   selectedBoxText: {
-    color: '#FFF8E8',
-    fontSize: 8,
-    fontWeight: '700',
+    color: '#F4F0DE',
+    fontSize: 12,
+    fontWeight: '800',
   },
   keyboardRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    gap: 2,
-    marginTop: 2,
-  },
-  keyButton: {
-    flex: 1,
-    borderRadius: 7,
-    backgroundColor: '#4B7A39',
-    borderWidth: 1,
-    borderColor: 'rgba(188, 226, 107, 0.28)',
-    alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 1,
-  },
-  keyButtonWide: {
-    flex: 1.8,
-  },
-  keyButtonBackspace: {
-    flex: 1.15,
-    backgroundColor: '#6B3E1E',
-    borderColor: 'rgba(255, 224, 169, 0.20)',
-  },
-  keyButtonText: {
-    color: '#F5F7F0',
-    fontWeight: '800',
-    textAlign: 'center',
-  },
-  cluesCard: {
-    width: '100%',
-    borderRadius: 16,
-    backgroundColor: 'rgba(63, 109, 34, 0.85)',
-    borderWidth: 1,
-    borderColor: 'rgba(202, 226, 99, 0.42)',
-    padding: 10,
-    marginBottom: 10,
-  },
-  cluesTitle: {
-    color: '#F3F7EA',
-    fontWeight: '800',
     marginBottom: 6,
   },
-  clueText: {
-    color: '#E7ECD6',
+  keyButton: {
+    minWidth: 34,
+    paddingHorizontal: 8,
+    marginHorizontal: 3,
+    borderRadius: 10,
+    backgroundColor: '#F6F0CF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#A58E53',
+  },
+  keyButtonWide: {
+    minWidth: 66,
+  },
+  keyButtonBackspace: {
+    minWidth: 46,
+  },
+  keyButtonText: {
+    color: '#1A1A1A',
+    fontWeight: '900',
+  },
+  cluesWrap: {
+    width: '100%',
+    maxWidth: 360,
+    borderRadius: 18,
+    backgroundColor: 'rgba(24,54,33,0.76)',
+    borderWidth: 1,
+    borderColor: 'rgba(229,228,198,0.24)',
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    marginBottom: 16,
+  },
+  cluesTitle: {
+    color: '#E9D89B',
+    fontWeight: '900',
+    marginBottom: 8,
+  },
+  clueButton: {
+    borderRadius: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
     marginBottom: 4,
+  },
+  clueButtonActive: {
+    backgroundColor: 'rgba(255,214,107,0.18)',
+  },
+  clueText: {
+    color: '#F4F0DE',
+    fontWeight: '600',
+  },
+  clueTextActive: {
+    color: '#FFD66B',
+    fontWeight: '800',
   },
   mainButton: {
     width: '100%',
-    borderRadius: 22,
-    backgroundColor: '#4B7A39',
-    borderWidth: 1,
-    borderColor: 'rgba(188, 226, 107, 0.45)',
+    maxWidth: 360,
+    borderRadius: 18,
+    backgroundColor: '#E9D89B',
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 8,
+    marginBottom: 12,
+    flexDirection: 'row',
+    borderWidth: 1,
+    borderColor: '#C1AA66',
+  },
+  mainButtonText: {
+    color: '#253321',
+    fontWeight: '900',
   },
   secondaryButton: {
     width: '100%',
-    borderRadius: 20,
-    backgroundColor: 'rgba(109, 58, 24, 0.95)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 213, 153, 0.18)',
+    maxWidth: 360,
+    borderRadius: 18,
+    backgroundColor: 'rgba(24,54,33,0.78)',
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 8,
-  },
-  mainButtonText: {
-    color: '#F5F7F0',
-    fontWeight: '800',
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(229,228,198,0.24)',
   },
   secondaryButtonText: {
-    color: '#FFF8E8',
-    fontWeight: '700',
+    color: '#F4F0DE',
+    fontWeight: '800',
   },
   resultLevel: {
-    color: '#FFF8E8',
-    fontSize: 14,
-    fontWeight: '600',
-    marginTop: 10,
+    marginTop: 8,
+    color: '#E9D89B',
+    fontSize: 15,
+    fontWeight: '800',
     textAlign: 'center',
   },
   shareButton: {
-    flexDirection: 'row',
     gap: 8,
   },
   shareIcon: {
-    color: '#F5F7F0',
-    fontSize: 15,
-    fontWeight: '800',
+    color: '#253321',
+    fontSize: 16,
+    fontWeight: '900',
+    marginTop: -1,
   },
 });
